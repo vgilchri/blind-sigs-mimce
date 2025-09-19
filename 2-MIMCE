@@ -1,0 +1,405 @@
+clear;
+
+// n := 31; m:= n; k:= n; q:= 4093;
+
+// ---------------- SET-UP FUNCTIONS ------------------
+
+// random lower triangular matrix
+GenLowerTriangular := function(k,q)
+	F := FiniteField(q);
+	M := ZeroMatrix(F,k);
+	for i,j in [1..k] do 
+		if i ge j then
+			M[i][j] := Random(F);
+		end if;
+	end for;
+	return M;
+end function;
+
+// random invertible symmetric matrix
+GenSymInvMat := function(k,q)
+	F := FiniteField(q);
+	while true do 
+		// add a lower triangular to its transpose and check if invertible
+		T := GenLowerTriangular(k,q);
+		M := T + Transpose(T);
+		if Determinant(M) ne 0 then 
+			return M;
+		end if;
+	end while;
+end function;
+
+// random invertible matrix
+GenRandomInvertible := function(k,q)
+	F := FiniteField(q);
+	while true do 
+		M := RandomMatrix(F,k,k);
+		if Determinant(M) ne 0 then 
+			return M;
+		end if;
+	end while;
+end function;
+
+ // random code (via its generator matrix)
+GenCode := function(m,n,k,q)
+	F := FiniteField(q);
+	while true do 
+		C := RandomMatrix(F,k,m*n);
+		if Rank(C) eq k then 
+			return C;
+		end if;
+	end while;
+end function;
+
+// generate an instance of MIMCE with 1 sample
+GenMIMCE := function(m,n,k,q)
+	G0 := GenCode(m,n,k,q);
+
+	S0 := GenRandomInvertible(k,q);
+	S1 := GenRandomInvertible(k,q);
+
+	A := GenSymInvMat(m,q);
+	B := GenSymInvMat(n,q);
+	K := KroneckerProduct(A,B);
+
+	G1 := S0 * G0 * K;
+	G2 := S1 * G0 * K^-1;
+
+	return G0,G1,G2;
+end function;
+
+// generate an instance of MIMCE with 2 samples
+GenMIMCE2 := function(m,n,k,q)
+	// different isomorphisms are used, but the same A,B secret key
+	G0 := GenCode(m,n,k,q);
+	S0 := GenRandomInvertible(k,q);
+	S1 := GenRandomInvertible(k,q);
+
+	A := GenSymInvMat(m,q);
+	B := GenSymInvMat(n,q);
+	K := KroneckerProduct(A,B);
+
+	G1 := S0 * G0 * K;
+	G2 := S1 * G0 * K^-1;
+
+	F0 := GenCode(m,n,k,q);
+	S2 := GenRandomInvertible(k,q);
+	S3 := GenRandomInvertible(k,q);
+	F1 := S2 * F0 * K;
+	F2 := S3 * F0 * K^-1;
+
+	return G0,G1,G2,F0,F1,F2,S0,S1,S2,S3,A,B;
+end function;
+
+// ---------------- ATTACK SUBROUTINES ------------------
+
+// filtering function for RecoverIso
+FilterSols := function(sols,k)
+	cands := [];
+
+	// place the values into matrix structure
+	for s in sols do 
+		LS0 := [s[i] : i in [1..k^2]];
+		S0 := Matrix(k,k,LS0);
+		d0 := Determinant(S0);
+
+		LS1 := [s[i] : i in [k^2+1..2*k^2]];
+		S1inv := Matrix(k,k,LS1);
+		d1 := Determinant(S1inv);
+
+		LS2 := [s[i] : i in [2*k^2+1..3*k^2]];
+		S2 := Matrix(k,k,LS2);
+		d2 := Determinant(S2);
+
+		LS3 := [s[i] : i in [3*k^2+1..4*k^2]];
+		S3inv := Matrix(k,k,LS3);
+		d3 := Determinant(S3inv);
+
+		// check if all the matrices are invertible
+		if d0*d1*d2*d3 ne 0 then 
+			//cands cat:= [[S0,S1inv^-1,S2, S3inv^-1]];
+			cands cat:= [S0]; // we only need S0
+		end if;
+	end for; 
+	return cands;
+end function;
+
+// computes the parity check matrix given a generator matrix
+ComputeParityCheck := function(G)
+	m:=#Rows(G); // # of rows
+	n:=#Rows(Transpose(G)); // # of columns
+	Fp:=Parent(G[1][1]);
+
+	// reduce matrix to rref and take non-identity segment
+	M := EchelonForm(G);
+	T := ExtractBlock(M,1,m+1,m,n-m);
+	I := IdentityMatrix(Fp,n-m);
+	H := HorizontalJoin(-1*Transpose(T),I);
+	return H;
+end function;
+
+// recovers one solution of isomorphism in 2 sample instance of MIMCE
+RecoverOneIso := function(m,n,k,q,G0,G1,G2,F0,F1,F2)
+	F := FiniteField(q);
+	// vars for S0,S1,S2,S3
+	vars := Integers()!(4*k^2); 
+	poly<[X]> := PolynomialRing(F,vars);
+
+	// variable matrices 
+	LS0 := [X[i] : i in [1..k^2]];
+	S0 := Matrix(k,k,LS0);
+
+	LS1 := [X[i] : i in [k^2+1..2*k^2]];
+	S1inv := Matrix(k,k,LS1);
+
+	LS2 := [X[i] : i in [2*k^2+1..3*k^2]];
+	S2 := Matrix(k,k,LS2);
+
+	LS3 := [X[i] : i in [3*k^2+1..4*k^2]];
+	S3inv := Matrix(k,k,LS3);
+
+	// solve for S_i ------
+
+	G0 := ChangeRing(G0,poly);
+	G1 := ChangeRing(G1,poly);
+	G2 := ChangeRing(G2,poly);
+	F0 := ChangeRing(F0,poly);
+	F1 := ChangeRing(F1,poly);
+	F2 := ChangeRing(F2,poly);
+	eq1 := S0*G0*Transpose(G0) - G1 * Transpose(G2) * Transpose(S1inv);
+	eq2 := S2*F0*Transpose(F0) - F1 * Transpose(F2) * Transpose(S3inv);
+	eq3 := S0*G0*Transpose(F0) - G1 * Transpose(F2) * Transpose(S3inv);
+	eq4 := S2*F0*Transpose(G0) - F1 * Transpose(G2) * Transpose(S1inv);
+
+	// normalize n entries to get one fixed solution
+	eqs := [X[i]-1:i in [1..n]];
+	// add equations
+	for i,j in [1..k] do 
+		eqs cat:= [eq1[i][j],eq2[i][j],eq3[i][j],eq4[i][j]];
+	end for;
+
+	sols := Variety(Ideal(eqs));
+	cands := FilterSols(sols,k);
+
+	return cands;
+end function;
+
+// recovers A given one possible solution to iso recovery for 2-MIMCE problem
+twoMIMCErecoverA := function(m,n,q,G0,G1,F0,S)
+	k := n;
+	F := FiniteField(q);
+	// count vars for A
+	sym_vars := Integers()!(m*(m+1)/2);
+	// vars for A + parametrizing isomorphism S
+	poly<[X]> := PolynomialRing(F,sym_vars+n);
+
+	// construct A as a variable matrix to be solved for
+	A := ZeroMatrix(poly,m);
+	counter := 1;
+	for i,j in [1..m] do 
+		if i ge j then 
+			A[i][j] := X[counter];
+			A[j][i] := X[counter];
+			counter +:= 1;
+		end if;
+	end for;
+
+	// construct perturbation matrix T0 s.t. S0 = S*T0 and T0 = (polynomial of V)
+	G0 := ChangeRing(G0,poly);
+	F0 := ChangeRing(F0,poly);
+	GG:= G0*Transpose(G0);
+	GF := G0*Transpose(F0);
+	FG := F0*Transpose(G0);
+	FF := F0*Transpose(F0);
+	V := GG*FG^-1*FF*GF^-1;
+	T0 := ZeroMatrix(poly,k);
+	for i in [1..n] do 
+		T0 +:= X[i+sym_vars]*V^(i-1);
+	end for;
+	S0 := S * T0;
+
+	// ------ solve for A -------------
+
+	In := IdentityMatrix(poly,n);
+	P := S0 * G0 * KroneckerProduct(A,In);
+
+	// Separate P into blocks and store in a list
+	Lvar := [];
+	for i in [1..n] do 
+		M := Submatrix(P,1,(i-1)*n+1,k,m);
+		Lvar cat:= [M];
+	end for;
+
+	// separate G1 into blocks
+	Lg := [];
+	for i in [1..n] do 
+		M := Submatrix(G1,1,(i-1)*n+1,k,m);
+		Lg cat:= [M];
+	end for;
+
+	// set up linear relations
+	mats := [];
+	for j in [1..n] do
+		T := Lg[1]^-1*Lvar[1] - Lg[j]^-1*Lvar[j];
+		mats cat:= [T];
+	end for;
+
+	eqs := [X[1] -1, X[sym_vars + 1]-1]; // normalize
+	for i in [1..m] do // add equations
+		for j in [1..k] do 
+			for M in mats do 
+				eqs cat:= [M[i][j]];
+			end for;
+		end for;
+	end for;
+
+	SetVerbose("Groebner",0);
+	I := Ideal(eqs);
+	sols := Variety(I);
+
+	// post process solutions back into matrix form
+	cands := [];
+	V := ChangeRing(V,F);
+	for s in sols do 
+		counter := 1;
+		A0 := ZeroMatrix(F,m);
+		for i,j in [1..m] do 
+			if i ge j then 
+				A0[i][j] := s[counter];
+				A0[j][i] := s[counter];
+				counter +:= 1;
+			end if;
+		end for;
+		T0 := ZeroMatrix(F,k);
+		for i in [1..n] do 
+			T0 +:= s[i+sym_vars]*V^(i-1);
+		end for;
+
+		// only keep if invertible
+		if Determinant(A0) ne 0 and Determinant(S*T0) ne 0 then
+			cands cat:= [[A0,S*T0]];
+		end if;
+	end for;
+
+	return cands;
+end function;
+
+// compute the commutation matrix i.e. M s.t. A tensor B = M (B tensor A) M^T
+ComputeCommutation := function(m,n,q)
+	F := FiniteField(q);
+	blocks := [];
+	for i in [1..n] do 
+		for j in [1..m] do 
+			K := ZeroMatrix(F,n);
+			for p in [1..n] do 
+				for r in [1..m] do 
+					if i eq r and j eq p then
+						K[p,r] := 1;
+					end if;
+				end for;
+			end for;
+			blocks cat:= [K];
+		end for;
+	end for;
+	M := BlockMatrix(m,m,blocks);
+	return M;
+end function;
+
+// recovers B given A and S0
+RecoverB := function(m,n,q,G0,G1,S0,A)
+	k := n;
+	F := FiniteField(q);
+	// vars for B
+	poly<[X]> := PolynomialRing(F,Integers()!(n*(n+1)/2));
+
+	// construct B as a variable matrix to be solved for
+	B := ZeroMatrix(poly,n);
+	counter := 1;
+	for i,j in [1..n] do 
+		if i ge j then 
+			B[i][j] := X[counter];
+			B[j][i] := X[counter];
+			counter +:= 1;
+		end if;
+	end for;
+
+	// solve for B --------------
+
+	G0 := ChangeRing(G0,poly);
+	G1 := ChangeRing(G1,poly);
+	S0 := ChangeRing(S0,poly);
+	A := ChangeRing(A,poly);
+	Im := IdentityMatrix(poly,m);
+	
+	// linear relation depending on B
+	M := S0*G0*KroneckerProduct(A,B) - G1;
+
+	eqs := [];
+	for i in [1..k] do 
+		for j in [1..m*n] do 
+			eqs cat:= [M[i][j]];
+		end for;
+	end for;
+
+	// solve linear equations
+	I := Ideal(eqs);
+	sols := Variety(I);
+
+	// post process the solutions back into matrix form
+	cands := [];
+	for s in sols do 
+		counter := 1;
+		B := ZeroMatrix(F,m);
+		for i,j in [1..m] do 
+		if i ge j then 
+			B[i][j] := s[counter];
+			B[j][i] := s[counter];
+			counter +:= 1;
+		end if;
+		end for;
+		cands cat:= [B];
+	end for;
+
+	return cands;
+end function;
+
+// ----------------- ATTACK -------------------
+
+// given two samples of one MIMCE instance, recover the secrets A,B
+twoMIMCEattack := function(m,n,k,q,G0,G1,G2,F0,F1,F2)
+
+	// recover one fixed solution for S0
+	S := RecoverOneIso(m,n,k,q,G0,G1,G2,F0,F1,F2)[1];
+	// now recover A and the correct S0
+	candidatesAS0 := twoMIMCErecoverA(m,n,q,G0,G1,F0,S);
+
+	// store candidates for S0,A,B
+	res := [];
+
+	for sol in candidatesAS0 do 
+		A := sol[1];
+		S0 := sol[2];
+		candidatesB := RecoverB(m,n,q,G0,G1,S0,A);
+		if #candidatesB gt 0 then 
+			for B in candidatesB do 
+				// check correctness
+				if G1 eq S0*G0*KroneckerProduct(A,B) then
+					res cat:= [[A,B]];
+				end if;
+			end for;
+		end if;
+	end for;
+
+	return res;
+end function;
+
+
+// // --------------- testing 2-MIMCE ------------------
+
+n := 5; m:= n; k:= n; q:= 101;
+G0,G1,G2,F0,F1,F2,S0,S1,S2,S3,A,B := GenMIMCE2(m,n,k,q);
+time sols := twoMIMCEattack(m,n,k,q,G0,G1,G2,F0,F1,F2);
+#sols;
+
+
+
