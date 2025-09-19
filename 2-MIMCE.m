@@ -1,6 +1,6 @@
 clear;
 
-// n := 31; m:= n; k:= n; q:= 4093;
+// code for attacking the 2 sample version of MIMCE (written in Magma)
 
 // ---------------- SET-UP FUNCTIONS ------------------
 
